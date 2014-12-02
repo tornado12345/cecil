@@ -114,6 +114,10 @@ namespace Mono.Cecil {
 			type = type.GetElementType ();
 
 			var scope = type.Scope;
+
+			if (scope == null)
+				return null;
+
 			switch (scope.MetadataScopeType) {
 			case MetadataScopeType.AssemblyNameReference:
 				var assembly = assembly_resolver.Resolve ((AssemblyNameReference) scope);
@@ -171,7 +175,7 @@ namespace Mono.Cecil {
 			if (declaring_type == null)
 				return null;
 
-			return declaring_type.GetNestedType (type.Name);
+			return declaring_type.GetNestedType (type.TypeFullName ());
 		}
 
 		public virtual FieldDefinition Resolve (FieldReference field)
