@@ -90,7 +90,7 @@ namespace Mono.Cecil.Mdb {
 		}
 
 		void Populate (Collection<Instruction> instructions, int [] offsets,
-			int [] startRows, int [] startCols, out SourceFile file)
+			int [] startRows, int [] endRows, int [] startCols, int [] endCols, out SourceFile file)
 		{
 			SourceFile source_file = null;
 
@@ -103,7 +103,9 @@ namespace Mono.Cecil.Mdb {
 					source_file = GetSourceFile (sequence_point.Document);
 
 				startRows [i] = sequence_point.StartLine;
+				endRows [i] = sequence_point.EndLine;
 				startCols [i] = sequence_point.StartColumn;
+				endCols [i] = sequence_point.EndColumn;
 			}
 
 			file = source_file;
@@ -120,10 +122,12 @@ namespace Mono.Cecil.Mdb {
 
 			var offsets = new int [count];
 			var start_rows = new int [count];
+			var end_rows = new int [count];
 			var start_cols = new int [count];
+			var end_cols = new int [count];
 
 			SourceFile file;
-			Populate (instructions, offsets, start_rows, start_cols, out file);
+			Populate (instructions, offsets, start_rows, end_rows, start_cols, end_cols, out file);
 
 			var builder = writer.OpenMethod (file.CompilationUnit, 0, method);
 
@@ -132,7 +136,9 @@ namespace Mono.Cecil.Mdb {
 					offsets [i],
 					file.CompilationUnit.SourceFile,
 					start_rows [i],
+					end_rows [i],
 					start_cols [i],
+					end_cols [i],
 					false);
 
 			if (body.HasVariables)
@@ -175,6 +181,8 @@ namespace Mono.Cecil.Mdb {
 					GetSourceFile (sequence_point.Document).CompilationUnit.SourceFile,
 					sequence_point.StartLine,
 					sequence_point.EndLine,
+					sequence_point.StartColumn,
+					sequence_point.EndColumn,
 					false);
 			}
 
