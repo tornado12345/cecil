@@ -136,8 +136,8 @@ namespace Mono.Cecil.Mdb {
 					offsets [i],
 					file.CompilationUnit.SourceFile,
 					start_rows [i],
-					end_rows [i],
 					start_cols [i],
+					end_rows [i],
 					end_cols [i],
 					false);
 
@@ -180,8 +180,8 @@ namespace Mono.Cecil.Mdb {
 					instruction.Offset,
 					GetSourceFile (sequence_point.Document).CompilationUnit.SourceFile,
 					sequence_point.StartLine,
-					sequence_point.EndLine,
 					sequence_point.StartColumn,
+					sequence_point.EndLine,
 					sequence_point.EndColumn,
 					false);
 			}
