@@ -2257,7 +2257,7 @@ namespace Mono.Cecil {
 		{
 			var rid = local_scope_table.AddRow (new LocalScopeRow (
 				method_info.Method.MetadataToken.RID,
-				AddImportScope (scope.Import),
+				scope.import != null ? AddImportScope (scope.import) : 0,
 				local_variable_rid,
 				local_constant_rid,
 				(uint) scope.Start.Offset,
@@ -2272,9 +2272,6 @@ namespace Mono.Cecil {
 
 			if (scope.HasConstants)
 				AddLocalConstants (scope);
-
-			if (scope.Import != null)
-				AddImportScope (scope.Import);
 
 			for (int i = 0; i < scope.Scopes.Count; i++)
 				AddLocalScope (method_info, scope.Scopes [i]);
