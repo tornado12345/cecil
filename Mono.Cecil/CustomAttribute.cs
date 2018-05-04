@@ -9,7 +9,7 @@
 //
 
 using System;
-
+using System.Diagnostics;
 using Mono.Collections.Generic;
 
 namespace Mono.Cecil {
@@ -62,10 +62,13 @@ namespace Mono.Cecil {
 
 		bool HasFields { get; }
 		bool HasProperties { get; }
+		bool HasConstructorArguments { get; }
 		Collection<CustomAttributeNamedArgument> Fields { get; }
 		Collection<CustomAttributeNamedArgument> Properties { get; }
+		Collection<CustomAttributeArgument> ConstructorArguments { get; }
 	}
 
+	[DebuggerDisplay ("{AttributeType}")]
 	public sealed class CustomAttribute : ICustomAttribute {
 
 		internal CustomAttributeValueProjection projection;
@@ -196,19 +199,7 @@ namespace Mono.Cecil {
 
 					resolved = false;
 				}
-				return this;
 			});
-		}
-	}
-
-	static partial class Mixin {
-
-		public static void CheckName (string name)
-		{
-			if (name == null)
-				throw new ArgumentNullException ("name");
-			if (name.Length == 0)
-				throw new ArgumentException ("Empty name");
 		}
 	}
 }

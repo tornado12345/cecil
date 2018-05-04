@@ -416,12 +416,15 @@ namespace Mono.Cecil {
 
 				return base_type.IsTypeOf ("System", "Enum") || (base_type.IsTypeOf ("System", "ValueType") && !this.IsTypeOf ("System", "Enum"));
 			}
+			set {
+				throw new NotSupportedException ();
+			}
 		}
 
 		public override bool IsPrimitive {
 			get {
 				ElementType primitive_etype;
-				return MetadataSystem.TryGetPrimitiveElementType (this, out primitive_etype);
+				return MetadataSystem.TryGetPrimitiveElementType (this, out primitive_etype) && primitive_etype.IsPrimitive ();
 			}
 		}
 
@@ -528,8 +531,7 @@ namespace Mono.Cecil {
 
 		public InterfaceImplementation (TypeReference interfaceType)
 		{
-			if (interfaceType == null)
-				throw new ArgumentNullException ("interfaceType");
+			Mixin.CheckType (interfaceType, Mixin.Argument.interfaceType);
 
 			this.interface_type = interfaceType;
 			this.token = new MetadataToken (TokenType.InterfaceImpl);

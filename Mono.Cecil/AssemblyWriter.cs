@@ -11,6 +11,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Text;
 
 using Mono;
@@ -72,7 +73,13 @@ namespace Mono.Cecil {
 
 	static class ModuleWriter {
 
-		public static void WriteModuleTo (ModuleDefinition module, Disposable<Stream> stream, WriterParameters parameters)
+		public static void WriteModule (ModuleDefinition module, Disposable<Stream> stream, WriterParameters parameters)
+		{
+			using (stream)
+				Write (module, stream, parameters);
+		}
+
+		static void Write (ModuleDefinition module, Disposable<Stream> stream, WriterParameters parameters)
 		{
 			if ((module.Attributes & ModuleAttributes.ILOnly) == 0)
 				throw new NotSupportedException ("Writing mixed-mode assemblies is not supported");
@@ -85,42 +92,37 @@ namespace Mono.Cecil {
 
 			module.MetadataSystem.Clear ();
 
+			if (module.symbol_reader != null)
+				module.symbol_reader.Dispose ();
+
 			var name = module.assembly != null ? module.assembly.Name : null;
 			var fq_name = stream.value.GetFileName ();
+			var timestamp = parameters.Timestamp ?? module.timestamp;
 			var symbol_writer_provider = parameters.SymbolWriterProvider;
-#if !PCL && !NET_CORE
-			if (symbol_writer_provider == null && parameters.WriteSymbols)
-				symbol_writer_provider = SymbolProvider.GetPlatformWriterProvider ();
-#endif
-			var symbol_writer = GetSymbolWriter (module, fq_name, symbol_writer_provider, parameters);
 
-#if !PCL && !NET_CORE
+			if (symbol_writer_provider == null && parameters.WriteSymbols)
+				symbol_writer_provider = new DefaultSymbolWriterProvider ();
+
+#if !NET_CORE
 			if (parameters.StrongNameKeyPair != null && name != null) {
 				name.PublicKey = parameters.StrongNameKeyPair.PublicKey;
 				module.Attributes |= ModuleAttributes.StrongNameSigned;
 			}
 #endif
 
-			var metadata = new MetadataBuilder (module, fq_name, symbol_writer_provider, symbol_writer);
+			using (var symbol_writer = GetSymbolWriter (module, fq_name, symbol_writer_provider, parameters)) {
+				var metadata = new MetadataBuilder (module, fq_name, timestamp, symbol_writer_provider, symbol_writer);
+				BuildMetadata (module, metadata);
 
-			BuildMetadata (module, metadata);
+				var writer = ImageWriter.CreateWriter (module, metadata, stream);
+				stream.value.SetLength (0);
+				writer.WriteImage ();
 
-			if (module.symbol_reader != null)
-				module.symbol_reader.Dispose ();
-
-			var writer = ImageWriter.CreateWriter (module, metadata, stream);
-
-			writer.WriteImage ();
-
-			if (metadata.symbol_writer != null)
-				metadata.symbol_writer.Dispose ();
-
-#if !PCL && !NET_CORE
-			if (parameters.StrongNameKeyPair != null)
-				CryptoService.StrongName (stream.value, writer, parameters.StrongNameKeyPair);
-
-			stream.Dispose ();
+#if !NET_CORE
+				if (parameters.StrongNameKeyPair != null)
+					CryptoService.StrongName (stream.value, writer, parameters.StrongNameKeyPair);
 #endif
+			}
 		}
 
 		static void BuildMetadata (ModuleDefinition module, MetadataBuilder metadata)
@@ -144,11 +146,7 @@ namespace Mono.Cecil {
 			if (parameters.SymbolStream != null)
 				return symbol_writer_provider.GetSymbolWriter (module, parameters.SymbolStream);
 
-#if !PCL
 			return symbol_writer_provider.GetSymbolWriter (module, fq_name);
-#else
-			return null;
-#endif
 		}
 	}
 
@@ -157,7 +155,7 @@ namespace Mono.Cecil {
 		public abstract int Length { get; }
 
 		public bool IsLarge {
-			get { return Length > 65535; }
+			get { return Length > ushort.MaxValue; }
 		}
 
 		public abstract void Write (TableHeapBuffer buffer);
@@ -777,7 +775,7 @@ namespace Mono.Cecil {
 		}
 	}
 
-	sealed class CustomDebugInformationTable : MetadataTable<CustomDebugInformationRow> {
+	sealed class CustomDebugInformationTable : SortedTable<CustomDebugInformationRow> {
 
 		public override void Write (TableHeapBuffer buffer)
 		{
@@ -786,6 +784,11 @@ namespace Mono.Cecil {
 				buffer.WriteGuid (rows [i].Col2);	// Kind
 				buffer.WriteBlob (rows [i].Col3);	// Value
 			}
+		}
+
+		public override int Compare (CustomDebugInformationRow x, CustomDebugInformationRow y)
+		{
+			return Compare(x.Col1, y.Col1);
 		}
 	}
 
@@ -796,7 +799,7 @@ namespace Mono.Cecil {
 		readonly internal ISymbolWriter symbol_writer;
 		readonly internal TextMap text_map;
 		readonly internal string fq_name;
-		readonly internal uint time_stamp;
+		readonly internal uint timestamp;
 
 		readonly Dictionary<TypeRefRow, MetadataToken> type_ref_map;
 		readonly Dictionary<uint, MetadataToken> type_spec_map;
@@ -859,14 +862,12 @@ namespace Mono.Cecil {
 		readonly Dictionary<ImportScopeRow, MetadataToken> import_scope_map;
 		readonly Dictionary<string, MetadataToken> document_map;
 
-		readonly internal bool write_symbols;
-
-		public MetadataBuilder (ModuleDefinition module, string fq_name, ISymbolWriterProvider symbol_writer_provider, ISymbolWriter symbol_writer)
+		public MetadataBuilder (ModuleDefinition module, string fq_name, uint timestamp, ISymbolWriterProvider symbol_writer_provider, ISymbolWriter symbol_writer)
 		{
 			this.module = module;
 			this.text_map = CreateTextMap ();
 			this.fq_name = fq_name;
-			this.time_stamp = (uint) DateTime.UtcNow.Subtract (new DateTime (1970, 1, 1)).TotalSeconds;
+			this.timestamp = timestamp;
 			this.symbol_writer_provider = symbol_writer_provider;
 
 			if (symbol_writer == null && module.HasImage && module.Image.HasDebugTables ()) {
@@ -874,12 +875,11 @@ namespace Mono.Cecil {
 			}
 
 			this.symbol_writer = symbol_writer;
-			this.write_symbols = symbol_writer != null;
 
-			var pdb_writer = symbol_writer as PortablePdbWriter;
+			var pdb_writer = symbol_writer as IMetadataSymbolWriter;
 			if (pdb_writer != null) {
 				portable_pdb = true;
-				pdb_writer.SetModuleMetadata (this);
+				pdb_writer.SetMetadata (this);
 			}
 
 			this.code = new CodeWriter (this);
@@ -1007,6 +1007,8 @@ namespace Mono.Cecil {
 		{
 			BuildModule ();
 
+			table_heap.string_offsets = string_heap.WriteStrings ();
+			table_heap.ComputeTableInformations ();
 			table_heap.WriteTableHeap ();
 		}
 
@@ -1048,6 +1050,10 @@ namespace Mono.Cecil {
 
 			if (module.EntryPoint != null)
 				entry_point = LookupToken (module.EntryPoint);
+
+			var pdb_writer = symbol_writer as IMetadataSymbolWriter;
+			if (pdb_writer != null)
+				pdb_writer.WriteModule ();
 		}
 
 		void BuildAssembly ()
@@ -1082,7 +1088,7 @@ namespace Mono.Cecil {
 				if (module.IsMain)
 					continue;
 
-#if PCL || NET_CORE
+#if NET_CORE
 				throw new NotSupportedException ();
 #else
 				var parameters = new WriterParameters {
@@ -1102,7 +1108,7 @@ namespace Mono.Cecil {
 			}
 		}
 
-#if !PCL && !NET_CORE
+#if !NET_CORE
 		string GetModuleFileName (string name)
 		{
 			if (string.IsNullOrEmpty (name))
@@ -1203,7 +1209,7 @@ namespace Mono.Cecil {
 			var table = GetTable<FileTable> (Table.File);
 			var hash = resource.Hash;
 
-#if !PCL && !NET_CORE
+#if !NET_CORE
 			if (hash.IsNullOrEmpty ())
 				hash = CryptoService.ComputeHash (resource.File);
 #endif
@@ -1265,7 +1271,7 @@ namespace Mono.Cecil {
 				return;
 
 			AttachTokens ();
-			AddTypeDefs ();
+			AddTypes ();
 			AddGenericParameters ();
 		}
 
@@ -1274,33 +1280,33 @@ namespace Mono.Cecil {
 			var types = module.Types;
 
 			for (int i = 0; i < types.Count; i++)
-				AttachTypeDefToken (types [i]);
+				AttachTypeToken (types [i]);
 		}
 
-		void AttachTypeDefToken (TypeDefinition type)
+		void AttachTypeToken (TypeDefinition type)
 		{
 			type.token = new MetadataToken (TokenType.TypeDef, type_rid++);
 			type.fields_range.Start = field_rid;
 			type.methods_range.Start = method_rid;
 
 			if (type.HasFields)
-				AttachFieldsDefToken (type);
+				AttachFieldsToken (type);
 
 			if (type.HasMethods)
-				AttachMethodsDefToken (type);
+				AttachMethodsToken (type);
 
 			if (type.HasNestedTypes)
-				AttachNestedTypesDefToken (type);
+				AttachNestedTypesToken (type);
 		}
 
-		void AttachNestedTypesDefToken (TypeDefinition type)
+		void AttachNestedTypesToken (TypeDefinition type)
 		{
 			var nested_types = type.NestedTypes;
 			for (int i = 0; i < nested_types.Count; i++)
-				AttachTypeDefToken (nested_types [i]);
+				AttachTypeToken (nested_types [i]);
 		}
 
-		void AttachFieldsDefToken (TypeDefinition type)
+		void AttachFieldsToken (TypeDefinition type)
 		{
 			var fields = type.Fields;
 			type.fields_range.Length = (uint) fields.Count;
@@ -1308,7 +1314,7 @@ namespace Mono.Cecil {
 				fields [i].token = new MetadataToken (TokenType.Field, field_rid++);
 		}
 
-		void AttachMethodsDefToken (TypeDefinition type)
+		void AttachMethodsToken (TypeDefinition type)
 		{
 			var methods = type.Methods;
 			type.methods_range.Length = (uint) methods.Count;
@@ -1413,7 +1419,7 @@ namespace Mono.Cecil {
 			return token;
 		}
 
-		void AddTypeDefs ()
+		void AddTypes ()
 		{
 			var types = module.Types;
 
@@ -2058,6 +2064,11 @@ namespace Mono.Cecil {
 			return GetBlobIndex (GetMethodSignature (call_site));
 		}
 
+		public uint GetConstantTypeBlobIndex (TypeReference constant_type)
+		{
+			return GetBlobIndex (GetConstantTypeSignature (constant_type));
+		}
+
 		SignatureWriter GetVariablesSignature (Collection<VariableDefinition> variables)
 		{
 			var signature = CreateSignatureWriter ();
@@ -2065,6 +2076,14 @@ namespace Mono.Cecil {
 			signature.WriteCompressedUInt32 ((uint) variables.Count);
 			for (int i = 0; i < variables.Count; i++)
 				signature.WriteTypeSignature (variables [i].VariableType);
+			return signature;
+		}
+
+		SignatureWriter GetConstantTypeSignature (TypeReference constant_type)
+		{
+			var signature = CreateSignatureWriter ();
+			signature.WriteByte (0x6);
+			signature.WriteTypeSignature (constant_type);
 			return signature;
 		}
 
@@ -2140,6 +2159,7 @@ namespace Mono.Cecil {
 			case ElementType.SzArray:
 			case ElementType.Class:
 			case ElementType.Object:
+			case ElementType.None:
 			case ElementType.Var:
 			case ElementType.MVar:
 				signature.WriteInt32 (0);
@@ -2257,7 +2277,7 @@ namespace Mono.Cecil {
 		{
 			var rid = local_scope_table.AddRow (new LocalScopeRow (
 				method_info.Method.MetadataToken.RID,
-				AddImportScope (scope.Import),
+				scope.import != null ? AddImportScope (scope.import) : 0,
 				local_variable_rid,
 				local_constant_rid,
 				(uint) scope.Start.Offset,
@@ -2272,9 +2292,6 @@ namespace Mono.Cecil {
 
 			if (scope.HasConstants)
 				AddLocalConstants (scope);
-
-			if (scope.Import != null)
-				AddImportScope (scope.Import);
 
 			for (int i = 0; i < scope.Scopes.Count; i++)
 				AddLocalScope (method_info, scope.Scopes [i]);
@@ -2338,7 +2355,7 @@ namespace Mono.Cecil {
 			return signature;
 		}
 
-		void AddCustomDebugInformations (ICustomDebugInformationProvider provider)
+		public void AddCustomDebugInformations (ICustomDebugInformationProvider provider)
 		{
 			if (!provider.HasCustomDebugInformations)
 				return;
@@ -2358,6 +2375,12 @@ namespace Mono.Cecil {
 				case CustomDebugInformationKind.StateMachineScope:
 					AddStateMachineScopeDebugInformation (provider, (StateMachineScopeDebugInformation) custom_info);
 					break;
+				case CustomDebugInformationKind.EmbeddedSource:
+					AddEmbeddedSourceDebugInformation (provider, (EmbeddedSourceDebugInformation) custom_info);
+					break;
+				case CustomDebugInformationKind.SourceLink:
+					AddSourceLinkDebugInformation (provider, (SourceLinkDebugInformation) custom_info);
+					break;
 				default:
 					throw new NotImplementedException ();
 				}
@@ -2369,13 +2392,19 @@ namespace Mono.Cecil {
 			var method_info = ((MethodDefinition) provider).DebugInformation;
 
 			var signature = CreateSignatureWriter ();
-			signature.WriteUInt32 ((uint) state_machine_scope.Start.Offset);
 
-			var end_offset = state_machine_scope.End.IsEndOfMethod
-				? method_info.code_size
-				: state_machine_scope.End.Offset;
+			var scopes = state_machine_scope.Scopes;
 
-			signature.WriteUInt32 ((uint) (end_offset - state_machine_scope.Start.Offset));
+			for (int i = 0; i < scopes.Count; i++) {
+				var scope = scopes [i];
+				signature.WriteUInt32 ((uint) scope.Start.Offset);
+
+				var end_offset = scope.End.IsEndOfMethod
+					? method_info.code_size
+					: scope.End.Offset;
+
+				signature.WriteUInt32 ((uint) (end_offset - scope.Start.Offset));
+			}
 
 			AddCustomDebugInformation (provider, state_machine_scope, signature);
 		}
@@ -2385,13 +2414,45 @@ namespace Mono.Cecil {
 			var signature = CreateSignatureWriter ();
 			signature.WriteUInt32 ((uint) async_method.catch_handler.Offset + 1);
 
-			for (int i = 0; i < async_method.yields.Count; i++) {
-				signature.WriteUInt32 ((uint) async_method.yields [i].Offset);
-				signature.WriteUInt32 ((uint) async_method.resumes [i].Offset);
-				signature.WriteCompressedUInt32 (async_method.move_next.MetadataToken.RID);
+			if (!async_method.yields.IsNullOrEmpty ()) {
+				for (int i = 0; i < async_method.yields.Count; i++) {
+					signature.WriteUInt32 ((uint) async_method.yields [i].Offset);
+					signature.WriteUInt32 ((uint) async_method.resumes [i].Offset);
+					signature.WriteCompressedUInt32 (async_method.resume_methods [i].MetadataToken.RID);
+				}
 			}
 
 			AddCustomDebugInformation (provider, async_method, signature);
+		}
+
+		void AddEmbeddedSourceDebugInformation (ICustomDebugInformationProvider provider, EmbeddedSourceDebugInformation embedded_source)
+		{
+			var signature = CreateSignatureWriter ();
+			var content = embedded_source.content ?? Empty<byte>.Array;
+			if (embedded_source.compress) {
+				signature.WriteInt32 (content.Length);
+
+				var decompressed_stream = new MemoryStream (content);
+				var content_stream = new MemoryStream ();
+
+				using (var compress_stream = new DeflateStream (content_stream, CompressionMode.Compress, leaveOpen: true))
+					decompressed_stream.CopyTo (compress_stream);
+
+				signature.WriteBytes (content_stream.ToArray ());
+			} else {
+				signature.WriteInt32 (0);
+				signature.WriteBytes (content);
+			}
+
+			AddCustomDebugInformation (provider, embedded_source, signature);
+		}
+
+		void AddSourceLinkDebugInformation (ICustomDebugInformationProvider provider, SourceLinkDebugInformation source_link)
+		{
+			var signature = CreateSignatureWriter ();
+			signature.WriteBytes (Encoding.UTF8.GetBytes (source_link.content));
+
+			AddCustomDebugInformation (provider, source_link, signature);
 		}
 
 		void AddCustomDebugInformation (ICustomDebugInformationProvider provider, CustomDebugInformation custom_info, SignatureWriter signature)
@@ -2498,6 +2559,8 @@ namespace Mono.Cecil {
 
 			document.token = token;
 
+			AddCustomDebugInformations (document);
+
 			document_map.Add (document.Url, token);
 
 			return token;
@@ -2516,10 +2579,13 @@ namespace Mono.Cecil {
 			}
 
 			signature.WriteByte ((byte) separator);
-
-			var parts = name.Split (new [] { separator }, StringSplitOptions.RemoveEmptyEntries);
-			for (int i = 0; i < parts.Length; i++)
-				signature.WriteCompressedUInt32 (GetUTF8StringBlobIndex (parts [i]));
+			var parts = name.Split (new [] { separator });
+			for (int i = 0; i < parts.Length; i++) {
+				if (parts [i] == String.Empty)
+					signature.WriteCompressedUInt32 (0);
+				else
+					signature.WriteCompressedUInt32 (GetUTF8StringBlobIndex (parts [i]));
+			}
 
 			return signature;
 		}
@@ -3216,7 +3282,7 @@ namespace Mono.Cecil {
 
 #endif
 
-			static partial class Mixin {
+	static partial class Mixin {
 
 		public static bool TryGetUniqueDocument (this MethodDebugInformation info, out Document document)
 		{

@@ -13,6 +13,7 @@ using System.IO;
 
 using Mono.Cecil.Cil;
 using Mono.Cecil.Metadata;
+using Mono.Collections.Generic;
 
 using RVA = System.UInt32;
 
@@ -27,14 +28,19 @@ namespace Mono.Cecil.PE {
 		public string RuntimeVersion;
 		public TargetArchitecture Architecture;
 		public ModuleCharacteristics Characteristics;
+		public ushort LinkerVersion;
+
+		public ImageDebugHeader DebugHeader;
 
 		public Section [] Sections;
 
 		public Section MetadataSection;
 
 		public uint EntryPointToken;
+		public uint Timestamp;
 		public ModuleAttributes Attributes;
 
+		public DataDirectory Win32Resources;
 		public DataDirectory Debug;
 		public DataDirectory Resources;
 		public DataDirectory StrongName;
@@ -141,33 +147,6 @@ namespace Mono.Cecil.PE {
 			} finally {
 				Stream.value.Position = position;
 			}
-		}
-
-		public ImageDebugDirectory GetDebugHeader (out byte [] header)
-		{
-			var reader = GetReaderAt (Debug.VirtualAddress);
-			if (reader == null) {
-				header = Empty<byte>.Array;
-				return new ImageDebugDirectory ();
-			}
-
-			var directory = new ImageDebugDirectory {
-				Characteristics = reader.ReadInt32 (),
-				TimeDateStamp = reader.ReadInt32 (),
-				MajorVersion = reader.ReadInt16 (),
-				MinorVersion = reader.ReadInt16 (),
-				Type = reader.ReadInt32 (),
-				SizeOfData = reader.ReadInt32 (),
-				AddressOfRawData = reader.ReadInt32 (),
-				PointerToRawData = reader.ReadInt32 (),
-			};
-
-			reader = GetReaderAt ((uint) directory.AddressOfRawData);
-			header = reader != null
-				? reader.ReadBytes (directory.SizeOfData)
-				: Empty<byte>.Array;
-
-			return directory;
 		}
 
 		public bool HasDebugTables ()

@@ -1,4 +1,4 @@
-
+#if !READ_ONLY
 using Mono.Cecil.Mdb;
 
 using NUnit.Framework;
@@ -79,8 +79,8 @@ namespace Mono.Cecil.Tests {
 				foreach (var sp in info.SequencePoints)
 					Assert.AreEqual(@"C:\tmp\repropartial\BreakpointTest.Portable\TestService.cs", sp.Document.Url);
 
-
 			}, symbolReaderProvider: typeof(MdbReaderProvider), symbolWriterProvider: typeof(MdbWriterProvider));
 		}
 	}
 }
+#endif

@@ -1,6 +1,8 @@
+#if !READ_ONLY
 using System;
 using System.IO;
-
+using System.Linq;
+using System.Text;
 using NUnit.Framework;
 
 using Mono.Cecil.Cil;
@@ -28,7 +30,7 @@ namespace Mono.Cecil.Tests {
 	IL_0003: stloc.1
 	IL_0004: ldc.i4.0
 	IL_0005: stloc.2
-	.line 16707566,0:16707566,0 'C:\sources\PdbTarget\Program.cs'
+	.line hidden 'C:\sources\PdbTarget\Program.cs'
 	IL_0006: br.s IL_0017
 	.line 22,22:13,20 'C:\sources\PdbTarget\Program.cs'
 	IL_0008: ldloc.1
@@ -39,7 +41,7 @@ namespace Mono.Cecil.Tests {
 	IL_000c: ldloc.3
 	IL_000d: call System.Void System.Console::WriteLine(System.String)
 	IL_0012: nop
-	.line 16707566,0:16707566,0 'C:\sources\PdbTarget\Program.cs'
+	.line hidden 'C:\sources\PdbTarget\Program.cs'
 	IL_0013: ldloc.2
 	IL_0014: ldc.i4.1
 	IL_0015: add
@@ -315,14 +317,20 @@ namespace Mono.Cecil.Tests {
 				var move_next = state_machine.GetMethod ("MoveNext");
 
 				Assert.IsTrue (move_next.HasCustomDebugInformations);
-				Assert.AreEqual (2, move_next.CustomDebugInformations.Count);
 
-				var state_machine_scope = move_next.CustomDebugInformations [0] as StateMachineScopeDebugInformation;
+				var state_machine_scope = move_next.CustomDebugInformations.OfType<StateMachineScopeDebugInformation> ().FirstOrDefault ();
 				Assert.IsNotNull (state_machine_scope);
-				Assert.AreEqual (0, state_machine_scope.Start.Offset);
-				Assert.IsTrue (state_machine_scope.End.IsEndOfMethod);
+				Assert.AreEqual (3, state_machine_scope.Scopes.Count);
+				Assert.AreEqual (0, state_machine_scope.Scopes [0].Start.Offset);
+				Assert.IsTrue (state_machine_scope.Scopes [0].End.IsEndOfMethod);
 
-				var async_body = move_next.CustomDebugInformations [1] as AsyncMethodBodyDebugInformation;
+				Assert.AreEqual (0, state_machine_scope.Scopes [1].Start.Offset);
+				Assert.AreEqual (0, state_machine_scope.Scopes [1].End.Offset);
+
+				Assert.AreEqual (184, state_machine_scope.Scopes [2].Start.Offset);
+				Assert.AreEqual (343, state_machine_scope.Scopes [2].End.Offset);
+
+				var async_body = move_next.CustomDebugInformations.OfType<AsyncMethodBodyDebugInformation> ().FirstOrDefault ();
 				Assert.IsNotNull (async_body);
 				Assert.AreEqual (-1, async_body.CatchHandler.Offset);
 
@@ -334,14 +342,36 @@ namespace Mono.Cecil.Tests {
 				Assert.AreEqual (91, async_body.Resumes [0].Offset);
 				Assert.AreEqual (252, async_body.Resumes [1].Offset);
 
-				Assert.AreEqual (move_next, async_body.MoveNextMethod);
+				Assert.AreEqual (move_next, async_body.ResumeMethods [0]);
+				Assert.AreEqual (move_next, async_body.ResumeMethods [1]);
 			});
+		}
+
+#if !READ_ONLY
+		[Test]
+		public void EmbeddedCompressedPortablePdb ()
+		{
+			TestModule("EmbeddedCompressedPdbTarget.exe", module => {
+				Assert.IsTrue (module.HasDebugHeader);
+
+				var header = module.GetDebugHeader ();
+
+				Assert.IsNotNull (header);
+				Assert.AreEqual (2, header.Entries.Length);
+
+				var cv = header.Entries [0];
+				Assert.AreEqual (ImageDebugType.CodeView, cv.Directory.Type);
+
+				var eppdb = header.Entries [1];
+				Assert.AreEqual (ImageDebugType.EmbeddedPortablePdb, eppdb.Directory.Type);
+			}, symbolReaderProvider: typeof (EmbeddedPortablePdbReaderProvider), symbolWriterProvider: typeof (EmbeddedPortablePdbWriterProvider));
 		}
 
 		void TestPortablePdbModule (Action<ModuleDefinition> test)
 		{
 			TestModule ("PdbTarget.exe", test, symbolReaderProvider: typeof (PortablePdbReaderProvider), symbolWriterProvider: typeof (PortablePdbWriterProvider));
 			TestModule ("EmbeddedPdbTarget.exe", test, verify: !Platform.OnMono);
+			TestModule("EmbeddedCompressedPdbTarget.exe", test, symbolReaderProvider: typeof(EmbeddedPortablePdbReaderProvider), symbolWriterProvider: typeof(EmbeddedPortablePdbWriterProvider));
 		}
 
 		[Test]
@@ -351,5 +381,177 @@ namespace Mono.Cecil.Tests {
 				Assert.IsTrue (module.HasSymbols);
 			}, symbolReaderProvider: typeof (PortablePdbReaderProvider), symbolWriterProvider: typeof (PortablePdbWriterProvider));
 		}
+
+		[Test]
+		public void RoundTripLargePortablePdb ()
+		{
+			TestModule ("Mono.Android.dll", module => {
+				Assert.IsTrue (module.HasSymbols);
+			}, verify: false, symbolReaderProvider: typeof (PortablePdbReaderProvider), symbolWriterProvider: typeof (PortablePdbWriterProvider));
+		}
+
+		[Test]
+		public void EmptyPortablePdb ()
+		{
+			TestModule ("EmptyPdb.dll", module => {
+				Assert.IsTrue (module.HasSymbols);
+			}, symbolReaderProvider: typeof (PortablePdbReaderProvider), symbolWriterProvider: typeof (PortablePdbWriterProvider));
+		}
+
+		[Test]
+		public void NullClassConstant ()
+		{
+			TestModule ("xattr.dll", module => {
+				var type = module.GetType ("Library");
+				var method = type.GetMethod ("NullXAttributeConstant");
+				var symbol = method.DebugInformation;
+
+				Assert.IsNotNull (symbol);
+				Assert.AreEqual (1, symbol.Scope.Constants.Count);
+
+				var a = symbol.Scope.Constants [0];
+				Assert.AreEqual ("a", a.Name);
+			}, symbolReaderProvider: typeof (PortablePdbReaderProvider), symbolWriterProvider: typeof (PortablePdbWriterProvider));
+		}
+
+		[Test]
+		public void InvalidConstantRecord ()
+		{
+			using (var module = GetResourceModule ("mylib.dll", new ReaderParameters { SymbolReaderProvider = new PortablePdbReaderProvider () })) {
+				var type = module.GetType ("mylib.Say");
+				var method = type.GetMethod ("hello");
+				var symbol = method.DebugInformation;
+
+				Assert.IsNotNull (symbol);
+				Assert.AreEqual (0, symbol.Scope.Constants.Count);
+			}
+		}
+
+		[Test]
+		public void SourceLink ()
+		{
+			TestModule ("TargetLib.dll", module => {
+				Assert.IsTrue (module.HasCustomDebugInformations);
+				Assert.AreEqual (1, module.CustomDebugInformations.Count);
+
+				var source_link = module.CustomDebugInformations [0] as SourceLinkDebugInformation;
+				Assert.IsNotNull (source_link);
+				Assert.AreEqual ("{\"documents\":{\"C:\\\\tmp\\\\SourceLinkProblem\\\\*\":\"https://raw.githubusercontent.com/bording/SourceLinkProblem/197d965ee7f1e7f8bd3cea55b5f904aeeb8cd51e/*\"}}", source_link.Content);
+			}, symbolReaderProvider: typeof (PortablePdbReaderProvider), symbolWriterProvider: typeof (PortablePdbWriterProvider));
+		}
+
+		[Test]
+		public void EmbeddedSource ()
+		{
+			TestModule ("embedcs.exe", module => {
+				var program = GetDocument (module.GetType ("Program"));
+				var program_src = GetSourceDebugInfo (program);
+				Assert.IsTrue (program_src.compress);
+				var program_src_content = Encoding.UTF8.GetString (program_src.Content);
+				Assert.AreEqual (Normalize (@"using System;
+
+class Program
+{
+    static void Main()
+    {
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        Console.WriteLine(B.Do());
+        Console.WriteLine(A.Do());
+    }
+}
+"), Normalize (program_src_content));
+
+				var a = GetDocument (module.GetType ("A"));
+				var a_src = GetSourceDebugInfo (a);
+				Assert.IsFalse (a_src.compress);
+				var a_src_content = Encoding.UTF8.GetString (a_src.Content);
+				Assert.AreEqual (Normalize (@"class A
+{
+    public static string Do()
+    {
+        return ""A::Do"";
+    }
+}"), Normalize (a_src_content));
+
+				var b = GetDocument(module.GetType ("B"));
+				var b_src = GetSourceDebugInfo (b);
+				Assert.IsFalse (b_src.compress);
+				var b_src_content = Encoding.UTF8.GetString (b_src.Content);
+				Assert.AreEqual (Normalize (@"class B
+{
+    public static string Do()
+    {
+        return ""B::Do"";
+    }
+}"), Normalize (b_src_content));
+			}, symbolReaderProvider: typeof (PortablePdbReaderProvider), symbolWriterProvider: typeof (PortablePdbWriterProvider));
+		}
+
+		static Document GetDocument (TypeDefinition type)
+		{
+			foreach (var method in type.Methods) {
+				if (!method.HasBody)
+					continue;
+
+				foreach (var instruction in method.Body.Instructions) {
+					var sp = method.DebugInformation.GetSequencePoint (instruction);
+					if (sp != null && sp.Document != null)
+						return sp.Document;
+				}
+			}
+
+			return null;
+		}
+
+		static EmbeddedSourceDebugInformation GetSourceDebugInfo (Document document)
+		{
+			Assert.IsTrue (document.HasCustomDebugInformations);
+			Assert.AreEqual (1, document.CustomDebugInformations.Count);
+
+			var source = document.CustomDebugInformations [0] as EmbeddedSourceDebugInformation;
+			Assert.IsNotNull (source);
+			return source;
+		}
+
+		[Test]
+		public void PortablePdbLineInfo  ()
+		{
+			TestModule ("line.exe", module => {
+				var type = module.GetType ("Tests");
+				var main = type.GetMethod ("Main");
+
+				AssertCode (@"
+	.locals ()
+	.line 4,4:42,43 '/foo/bar.cs'
+	IL_0000: nop
+	.line 5,5:2,3 '/foo/bar.cs'
+	IL_0001: ret", main);
+			}, symbolReaderProvider: typeof (PortablePdbReaderProvider), symbolWriterProvider: typeof (PortablePdbWriterProvider));
+		}
+#endif
 	}
 }
+#endif
