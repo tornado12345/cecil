@@ -69,12 +69,11 @@ namespace Mono.Cecil {
 			if (parameters.metadata_resolver != null)
 				module.metadata_resolver = parameters.metadata_resolver;
 
-#if !READ_ONLY
 			if (parameters.metadata_importer_provider != null)
 				module.metadata_importer = parameters.metadata_importer_provider.GetMetadataImporter (module);
+
 			if (parameters.reflection_importer_provider != null)
 				module.reflection_importer = parameters.reflection_importer_provider.GetReflectionImporter (module);
-#endif
 
 			GetMetadataKind (module, parameters);
 
@@ -1119,11 +1118,14 @@ namespace Mono.Cecil {
 			metadata.AddTypeReference (type);
 
 			if (scope_token.TokenType == TokenType.TypeRef) {
-				declaring_type = GetTypeDefOrRef (scope_token);
+				if (scope_token.RID != rid) {
+					declaring_type = GetTypeDefOrRef (scope_token);
 
-				scope = declaring_type != null
-					? declaring_type.Scope
-					: module;
+					scope = declaring_type != null
+						? declaring_type.Scope
+						: module;
+				} else // obfuscated typeref row pointing to self
+					scope = module;
 			} else
 				scope = GetTypeReferenceScope (scope_token);
 
@@ -2405,6 +2407,9 @@ namespace Mono.Cecil {
 		{
 			if (token.TokenType != TokenType.Signature)
 				throw new NotSupportedException ();
+
+			if (token.RID == 0)
+				return null;
 
 			if (!MoveTo (Table.StandAloneSig, token.RID))
 				return null;
@@ -3763,8 +3768,10 @@ namespace Mono.Cecil {
 			if (length == 0)
 				return string.Empty;
 
-			var @string = Encoding.UTF8.GetString (buffer, position,
-				buffer [position + length - 1] == 0 ? length - 1 : length);
+			if (position + length > buffer.Length)
+				return string.Empty;
+
+			var @string = Encoding.UTF8.GetString (buffer, position, length);
 
 			position += length;
 			return @string;
