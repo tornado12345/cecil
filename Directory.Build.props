@@ -16,7 +16,7 @@
   <ItemGroup Condition=" '$(TargetFramework)' == 'net40' ">
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net40" Version="1.0.0" />
   </ItemGroup>
-  <ItemGroup>
+  <ItemGroup Condition="'$(MonoBuild)' != ''">
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="1.0.0" PrivateAssets="All" />
   </ItemGroup>
   <ItemGroup Condition=" '$(TargetFramework)' == 'net40' ">
