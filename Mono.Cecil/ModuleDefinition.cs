@@ -199,6 +199,8 @@ namespace Mono.Cecil {
 		Stream symbol_stream;
 		ISymbolWriterProvider symbol_writer_provider;
 		bool write_symbols;
+		byte [] key_blob;
+		string key_container;
 		SR.StrongNameKeyPair key_pair;
 
 		public uint? Timestamp {
@@ -221,10 +223,26 @@ namespace Mono.Cecil {
 			set { write_symbols = value; }
 		}
 
+		public bool HasStrongNameKey {
+			get { return key_pair != null || key_blob != null || key_container != null; }
+		}
+
+		public byte [] StrongNameKeyBlob {
+			get { return key_blob; }
+			set { key_blob = value; }
+		}
+
+		public string StrongNameKeyContainer {
+			get { return key_container; }
+			set { key_container = value; }
+		}
+
 		public SR.StrongNameKeyPair StrongNameKeyPair {
 			get { return key_pair; }
 			set { key_pair = value; }
 		}
+
+		public bool DeterministicMvid { get; set; }
 	}
 
 	public sealed class ModuleDefinition : ModuleReference, ICustomAttributeProvider, ICustomDebugInformationProvider, IDisposable {
@@ -439,7 +457,8 @@ namespace Mono.Cecil {
 				if (HasImage)
 					return Read (ref references, this, (_, reader) => reader.ReadAssemblyReferences ());
 
-				return references = new Collection<AssemblyNameReference> ();
+				Interlocked.CompareExchange (ref references, new Collection<AssemblyNameReference> (), null);
+				return references;
 			}
 		}
 
@@ -460,7 +479,8 @@ namespace Mono.Cecil {
 				if (HasImage)
 					return Read (ref modules, this, (_, reader) => reader.ReadModuleReferences ());
 
-				return modules = new Collection<ModuleReference> ();
+				Interlocked.CompareExchange (ref modules, new Collection<ModuleReference> (), null);
+				return modules;
 			}
 		}
 
@@ -484,7 +504,8 @@ namespace Mono.Cecil {
 				if (HasImage)
 					return Read (ref resources, this, (_, reader) => reader.ReadResources ());
 
-				return resources = new Collection<Resource> ();
+				Interlocked.CompareExchange (ref resources, new Collection<Resource> (), null);
+				return resources;
 			}
 		}
 
@@ -518,7 +539,8 @@ namespace Mono.Cecil {
 				if (HasImage)
 					return Read (ref types, this, (_, reader) => reader.ReadTypes ());
 
-				return types = new TypeDefinitionCollection (this);
+				Interlocked.CompareExchange (ref types, new TypeDefinitionCollection (this), null);
+				return types;
 			}
 		}
 
@@ -539,7 +561,8 @@ namespace Mono.Cecil {
 				if (HasImage)
 					return Read (ref exported_types, this, (_, reader) => reader.ReadExportedTypes ());
 
-				return exported_types = new Collection<ExportedType> ();
+				Interlocked.CompareExchange (ref exported_types, new Collection<ExportedType> (), null);
+				return exported_types;
 			}
 		}
 
@@ -564,7 +587,10 @@ namespace Mono.Cecil {
 
 		public Collection<CustomDebugInformation> CustomDebugInformations {
 			get {
-				return custom_infos ?? (custom_infos = new Collection<CustomDebugInformation> ());
+				if (custom_infos == null)
+					Interlocked.CompareExchange (ref custom_infos, new Collection<CustomDebugInformation> (), null);
+
+				return custom_infos;
 			}
 		}
 
@@ -1189,6 +1215,7 @@ namespace Mono.Cecil {
 			returnType,
 			propertyType,
 			interfaceType,
+			constraintType,
 		}
 
 		public static void CheckName (object name)

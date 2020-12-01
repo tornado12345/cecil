@@ -13,6 +13,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
+using System.Security.Cryptography;
 
 using Mono;
 using Mono.Collections.Generic;
@@ -101,10 +102,13 @@ namespace Mono.Cecil {
 			if (symbol_writer_provider == null && parameters.WriteSymbols)
 				symbol_writer_provider = new DefaultSymbolWriterProvider ();
 
-			if (parameters.StrongNameKeyPair != null && name != null) {
-				name.PublicKey = parameters.StrongNameKeyPair.PublicKey;
+			if (parameters.HasStrongNameKey && name != null) {
+				name.PublicKey = CryptoService.GetPublicKey (parameters);
 				module.Attributes |= ModuleAttributes.StrongNameSigned;
 			}
+
+			if (parameters.DeterministicMvid)
+				module.Mvid = Guid.Empty;
 
 			var metadata = new MetadataBuilder (module, fq_name, timestamp, symbol_writer_provider);
 			try {
@@ -114,12 +118,15 @@ namespace Mono.Cecil {
 					metadata.SetSymbolWriter (symbol_writer);
 					BuildMetadata (module, metadata);
 
+					if (parameters.DeterministicMvid)
+						metadata.ComputeDeterministicMvid ();
+
 					var writer = ImageWriter.CreateWriter (module, metadata, stream);
 					stream.value.SetLength (0);
 					writer.WriteImage ();
 
-					if (parameters.StrongNameKeyPair != null)
-						CryptoService.StrongName (stream.value, writer, parameters.StrongNameKeyPair);
+					if (parameters.HasStrongNameKey)
+						CryptoService.StrongName (stream.value, writer, parameters);
 				}
 			} finally {
 				module.metadata_builder = null;
@@ -1270,6 +1277,8 @@ namespace Mono.Cecil {
 
 		void AttachTypeToken (TypeDefinition type)
 		{
+			var treatment = WindowsRuntimeProjections.RemoveProjection (type);
+
 			type.token = new MetadataToken (TokenType.TypeDef, type_rid++);
 			type.fields_range.Start = field_rid;
 			type.methods_range.Start = method_rid;
@@ -1282,6 +1291,8 @@ namespace Mono.Cecil {
 
 			if (type.HasNestedTypes)
 				AttachNestedTypesToken (type);
+
+			WindowsRuntimeProjections.ApplyProjection (type, treatment);
 		}
 
 		void AttachNestedTypesToken (TypeDefinition type)
@@ -1512,12 +1523,20 @@ namespace Mono.Cecil {
 		{
 			var constraints = generic_parameter.Constraints;
 
-			var rid = generic_parameter.token.RID;
+			var gp_rid = generic_parameter.token.RID;
 
-			for (int i = 0; i < constraints.Count; i++)
-				table.AddRow (new GenericParamConstraintRow (
-					rid,
-					MakeCodedRID (GetTypeToken (constraints [i]), CodedIndex.TypeDefOrRef)));
+			for (int i = 0; i < constraints.Count; i++) {
+				var constraint = constraints [i];
+
+				var rid = table.AddRow (new GenericParamConstraintRow (
+					gp_rid,
+					MakeCodedRID (GetTypeToken (constraint.ConstraintType), CodedIndex.TypeDefOrRef)));
+
+				constraint.token = new MetadataToken (TokenType.GenericParamConstraint, rid);
+
+				if (constraint.HasCustomAttributes)
+					AddCustomAttributes (constraint);
+			}
 		}
 
 		void AddInterfaces (TypeDefinition type)
@@ -1981,15 +2000,11 @@ namespace Mono.Cecil {
 
 		MetadataToken GetMemberRefToken (MemberReference member)
 		{
-			var projection = WindowsRuntimeProjections.RemoveProjection (member);
-
 			var row = CreateMemberRefRow (member);
 
 			MetadataToken token;
 			if (!member_ref_map.TryGetValue (row, out token))
 				token = AddMemberReference (member, row);
-
-			WindowsRuntimeProjections.ApplyProjection (member, projection);
 
 			return token;
 		}
@@ -2642,6 +2657,25 @@ namespace Mono.Cecil {
 			signature.WriteSequencePoints (info);
 
 			method_debug_information_table.rows [rid - 1].Col2 = GetBlobIndex (signature);
+		}
+
+		public void ComputeDeterministicMvid ()
+		{
+			var guid = CryptoService.ComputeGuid (CryptoService.ComputeHash (
+				data,
+				resources,
+				string_heap,
+				user_string_heap,
+				blob_heap,
+				table_heap,
+				code));
+
+			var position = guid_heap.position;
+			guid_heap.position = 0;
+			guid_heap.WriteBytes (guid.ToByteArray ());
+			guid_heap.position = position;
+
+			module.Mvid = guid;
 		}
 	}
 

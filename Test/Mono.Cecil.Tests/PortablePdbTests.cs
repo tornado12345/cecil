@@ -5,6 +5,7 @@ using System.Text;
 using NUnit.Framework;
 
 using Mono.Cecil.Cil;
+using Mono.Cecil.Pdb;
 using Mono.Cecil.PE;
 
 namespace Mono.Cecil.Tests {
@@ -368,6 +369,33 @@ namespace Mono.Cecil.Tests {
 			}, symbolReaderProvider: typeof (EmbeddedPortablePdbReaderProvider), symbolWriterProvider: typeof (EmbeddedPortablePdbWriterProvider));
 		}
 
+		[Test]
+		public void EmbeddedCompressedPortablePdbFromStream ()
+		{
+			var bytes = File.ReadAllBytes (GetAssemblyResourcePath ("EmbeddedCompressedPdbTarget.exe"));
+			var parameters = new ReaderParameters {
+				ReadSymbols = true,
+				SymbolReaderProvider = new PdbReaderProvider ()
+			};
+
+			var module = ModuleDefinition.ReadModule (new MemoryStream(bytes), parameters);
+			Assert.IsTrue (module.HasDebugHeader);
+
+			var header = module.GetDebugHeader ();
+
+			Assert.IsNotNull (header);
+			Assert.AreEqual (2, header.Entries.Length);
+
+			var cv = header.Entries [0];
+			Assert.AreEqual (ImageDebugType.CodeView, cv.Directory.Type);
+
+			var eppdb = header.Entries [1];
+			Assert.AreEqual (ImageDebugType.EmbeddedPortablePdb, eppdb.Directory.Type);
+			Assert.AreEqual (0x0100, eppdb.Directory.MajorVersion);
+			Assert.AreEqual (0x0100, eppdb.Directory.MinorVersion);
+		}
+
+
 		void TestPortablePdbModule (Action<ModuleDefinition> test)
 		{
 			TestModule ("PdbTarget.exe", test, symbolReaderProvider: typeof (PortablePdbReaderProvider), symbolWriterProvider: typeof (PortablePdbWriterProvider));
@@ -668,6 +696,57 @@ class Program
 				Assert.IsFalse (Path.IsPathRooted (pdb_path));
 				Assert.AreEqual (Path.GetFileName (debug_header_pdb_path), pdb_path);
 			}
+		}
+
+		[Test]
+		public void WriteAndReadAgainModuleWithDeterministicMvid ()
+		{
+			const string resource = "mylib.dll";
+			string destination = Path.GetTempFileName ();
+
+			using (var module = GetResourceModule (resource, new ReaderParameters { SymbolReaderProvider = new PortablePdbReaderProvider () })) {
+				module.Write (destination, new WriterParameters { DeterministicMvid = true, SymbolWriterProvider = new SymbolWriterProvider () });
+			}
+
+			using (var module = ModuleDefinition.ReadModule (destination, new ReaderParameters { SymbolReaderProvider = new PortablePdbReaderProvider () })) {
+			}
+		}
+
+		[Test]
+		public void DoubleWriteAndReadAgainModuleWithDeterministicMvid ()
+		{
+			Guid mvid1_in, mvid1_out, mvid2_in, mvid2_out;
+
+			{
+				const string resource = "foo.dll";
+				string destination = Path.GetTempFileName ();
+
+				using (var module = GetResourceModule (resource, new ReaderParameters {  })) {
+					mvid1_in = module.Mvid;
+					module.Write (destination, new WriterParameters { DeterministicMvid = true });
+				}
+
+				using (var module = ModuleDefinition.ReadModule (destination, new ReaderParameters { })) {
+					mvid1_out = module.Mvid;
+				}
+			}
+
+			{
+				const string resource = "hello2.exe";
+				string destination = Path.GetTempFileName ();
+
+				using (var module = GetResourceModule (resource, new ReaderParameters {  })) {
+					mvid2_in = module.Mvid;
+					module.Write (destination, new WriterParameters { DeterministicMvid = true });
+				}
+
+				using (var module = ModuleDefinition.ReadModule (destination, new ReaderParameters { })) {
+					mvid2_out = module.Mvid;
+				}
+			}
+
+			Assert.AreNotEqual (mvid1_in, mvid2_in);
+			Assert.AreNotEqual (mvid1_out, mvid2_out);
 		}
 	}
 }
