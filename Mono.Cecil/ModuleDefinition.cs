@@ -276,7 +276,6 @@ namespace Mono.Cecil {
 
 		internal AssemblyDefinition assembly;
 		MethodDefinition entry_point;
-		bool entry_point_set;
 
 		internal IReflectionImporter reflection_importer;
 		internal IMetadataImporter metadata_importer;
@@ -569,7 +568,7 @@ namespace Mono.Cecil {
 
 		public MethodDefinition EntryPoint {
 			get {
-				if (entry_point_set)
+				if (entry_point != null)
 					return entry_point;
 
 				if (HasImage)
@@ -577,10 +576,7 @@ namespace Mono.Cecil {
 
 				return entry_point = null;
 			}
-			set {
-				entry_point = value;
-				entry_point_set = true;
-			}
+			set { entry_point = value; }
 		}
 
 		public bool HasCustomDebugInformations {
